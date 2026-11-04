@@ -1,0 +1,20 @@
+# build output
+.gradle/
+.kotlin/
+build/
+dist/
+*.apk
+*.aab
+
+# local machine configuration
+local.properties
+.idea/
+*.iml
+.DS_Store
+.claude/
+
+# camera lists contain credentials: never commit them
+cameras.yaml
+cameras.xml
+*.keystore
+*.jks

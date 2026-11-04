@@ -1,0 +1,24 @@
+# Example camera list. Copy to cameras.yaml (ignored by git) and edit; it is then bundled into the
+# APK at build time and seeds the app's list on first start. The same format is used by the
+# Import / Export buttons in the app's settings.
+#
+# input = RTSP sub stream (low resolution, shown in the grid)
+# main  = optional RTSP main stream (used when a single camera is enlarged, if enabled in settings)
+# Credentials are plain text: keep your real file, and any APK built with it, private.
+cameras:
+  front_door:
+    enabled: true
+    name: Front door
+    vendor: Dahua
+    input: rtsp://user:password@192.0.2.10:554/cam/realmonitor?channel=1&subtype=1
+    main: rtsp://user:password@192.0.2.10:554/cam/realmonitor?channel=1&subtype=0
+  garage:
+    enabled: true
+    name: Garage
+    vendor: Hikvision
+    input: rtsp://user:password@192.0.2.11:554/Streaming/Channels/102
+  backyard:
+    enabled: false
+    name: Backyard
+    vendor: Reolink
+    input: rtsp://user:password@192.0.2.12:554/h264Preview_01_sub
