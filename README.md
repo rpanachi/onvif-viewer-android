@@ -170,3 +170,8 @@ adb logcat -s OnvifViewer
 * No audio, recording, PTZ or ONVIF discovery.
 * Main streams larger than the device's hardware decoder limit (2048x1088 on the Fire HD 8) will
   not decode; that is why "main stream in single view" is off by default.
+
+## License
+
+Released under the [MIT License](LICENSE). The app depends on AndroidX libraries, which are
+licensed under the Apache License 2.0.
