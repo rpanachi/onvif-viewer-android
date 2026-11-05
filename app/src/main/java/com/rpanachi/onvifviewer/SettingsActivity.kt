@@ -57,21 +57,10 @@ class SettingsActivity : AppCompatActivity() {
             setPadding(pad, pad, pad, pad)
         }
 
-        root.addView(header("Layout"))
-        val presets = LayoutPresets.all
-        root.addView(Spinner(this).apply {
-            adapter = ArrayAdapter(this@SettingsActivity, android.R.layout.simple_spinner_dropdown_item, presets.map { it.label })
-            setSelection(presets.indexOfFirst { it.id == store.layoutId }.coerceAtLeast(0))
-            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
-                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
-                    if (store.layoutId != presets[position].id) {
-                        store.layoutId = presets[position].id
-                        store.page = 0
-                    }
-                }
-                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
-            }
-        })
+        root.addView(header("Layout in landscape"))
+        root.addView(layoutSpinner(true))
+        root.addView(header("Layout in portrait"))
+        root.addView(layoutSpinner(false))
         root.addView(header("Video scaling"))
         val modes = ScaleMode.entries
         root.addView(Spinner(this).apply {
@@ -85,7 +74,7 @@ class SettingsActivity : AppCompatActivity() {
             }
         })
         root.addView(toggle("Show camera names", store.showLabels) { store.showLabels = it })
-        root.addView(toggle("Use main (high resolution) stream when a single camera is shown", store.mainInSingle) { store.mainInSingle = it })
+        root.addView(toggle("Switch to the main (high resolution) stream when a camera is shown full screen", store.mainInSingle) { store.mainInSingle = it })
 
         root.addView(header("Cameras"))
         val buttons = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
@@ -125,6 +114,28 @@ class SettingsActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_CAMERA_ID = "camera_id"
+    }
+
+    private val layoutSpinners = HashMap<Boolean, Spinner>()
+
+    /** One layout per orientation; an orientation that was never set follows the other one. */
+    private fun layoutSpinner(landscape: Boolean): Spinner {
+        val presets = LayoutPresets.forOrientation(landscape)
+        return Spinner(this).apply {
+            adapter = ArrayAdapter(this@SettingsActivity, android.R.layout.simple_spinner_dropdown_item, presets.map { it.label })
+            setSelection(presets.indexOfFirst { it.id == store.layoutId(landscape) }.coerceAtLeast(0))
+            onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+                override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                    if (store.layoutId(landscape) == presets[position].id) return
+                    store.setLayoutId(landscape, presets[position].id)
+                    store.page = 0
+                    val others = LayoutPresets.forOrientation(!landscape)
+                    layoutSpinners[!landscape]?.setSelection(others.indexOfFirst { it.id == store.layoutId(!landscape) }.coerceAtLeast(0))
+                }
+                override fun onNothingSelected(parent: AdapterView<*>?) = Unit
+            }
+            layoutSpinners[landscape] = this
+        }
     }
 
     private fun header(text: String) = TextView(this).apply {

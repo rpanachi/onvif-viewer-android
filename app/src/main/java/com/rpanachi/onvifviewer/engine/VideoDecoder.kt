@@ -118,6 +118,10 @@ class VideoDecoder(
                 DecoderBudget.releaseHardware(mime)
                 hardware = false
             }
+            if (!isSw && !supportsSize(info)) {
+                Log.w(TAG, "${info.name}: ${dims.width}x${dims.height} is beyond its limits")
+                continue
+            }
             val mc = try {
                 MediaCodec.createByCodecName(info.name)
             } catch (e: Exception) {
@@ -145,6 +149,15 @@ class VideoDecoder(
         }
         return false
     }
+
+    /** Main streams can exceed what an old SoC decodes (the Fire HD 8 stops at 2048x1088). */
+    private fun supportsSize(info: MediaCodecInfo): Boolean = runCatching {
+        val video = info.getCapabilitiesForType(mime).videoCapabilities ?: return true
+        val long = maxOf(dims.width, dims.height)
+        val short = minOf(dims.width, dims.height)
+        long <= maxOf(video.supportedWidths.upper, video.supportedHeights.upper) &&
+            short <= minOf(video.supportedWidths.upper, video.supportedHeights.upper)
+    }.getOrDefault(true)
 
     private fun buildFormat(): MediaFormat {
         val f = MediaFormat.createVideoFormat(mime, dims.width, dims.height)

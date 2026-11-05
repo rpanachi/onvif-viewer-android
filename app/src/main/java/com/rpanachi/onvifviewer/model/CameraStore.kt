@@ -23,9 +23,21 @@ class CameraStore(context: Context) {
         app.assets.open("cameras.yaml").bufferedReader().use { CamerasYaml.parse(it.readText()) }
     }.getOrDefault(emptyList())
 
-    var layoutId: String
-        get() = prefs.getString(KEY_LAYOUT, "8") ?: "8"
-        set(v) = prefs.edit().putString(KEY_LAYOUT, v).apply()
+    /**
+     * The layout chosen for an orientation. Until one is chosen there, it follows the choice made in
+     * the other orientation (or the single layout stored by older versions).
+     */
+    fun layoutId(landscape: Boolean): String {
+        val own = prefs.getString(if (landscape) KEY_LAYOUT_LAND else KEY_LAYOUT_PORT, null)
+        LayoutPresets.resolve(own, landscape)?.let { return it }
+        val other = prefs.getString(if (landscape) KEY_LAYOUT_PORT else KEY_LAYOUT_LAND, null)
+            ?: prefs.getString(KEY_LAYOUT, null)
+        return LayoutPresets.resolve(other, landscape) ?: LayoutPresets.defaultId(landscape)
+    }
+
+    fun setLayoutId(landscape: Boolean, id: String) {
+        prefs.edit().putString(if (landscape) KEY_LAYOUT_LAND else KEY_LAYOUT_PORT, id).apply()
+    }
 
     var page: Int
         get() = prefs.getInt(KEY_PAGE, 0)
@@ -41,7 +53,7 @@ class CameraStore(context: Context) {
         set(v) = prefs.edit().putBoolean(KEY_LABELS, v).apply()
 
     var mainInSingle: Boolean
-        get() = prefs.getBoolean(KEY_MAIN_SINGLE, false)
+        get() = prefs.getBoolean(KEY_MAIN_SINGLE, true)
         set(v) = prefs.edit().putBoolean(KEY_MAIN_SINGLE, v).apply()
 
     var firstRun: Boolean
@@ -51,6 +63,8 @@ class CameraStore(context: Context) {
     private companion object {
         const val KEY_CAMERAS = "cameras"
         const val KEY_LAYOUT = "layout"
+        const val KEY_LAYOUT_LAND = "layout_landscape"
+        const val KEY_LAYOUT_PORT = "layout_portrait"
         const val KEY_PAGE = "page"
         const val KEY_SCALE = "scale_mode"
         const val KEY_LABELS = "show_labels"

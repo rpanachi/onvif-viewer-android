@@ -9,16 +9,26 @@ The app plays RTSP streams. It does not do ONVIF discovery, PTZ or recording, an
 
 ## Features
 
-* **Up to 16 live cameras** in grid layouts: 1, 4 (2x2), 6 (1 big + 5), 8 (1 big + 7), 9 (3x3),
-  9 (1 big + 8), 12 and 16 (4x4). Portrait and landscape.
+* **Up to 16 live cameras** in grid layouts, with a separate set for each orientation so cells
+  stay wider than tall and every layout covers the whole screen: 2x2, 3x2, 3x3, 4x3, 4x4 and
+  "1 big + 5 / 7 / 8" in landscape; 1x4, 2x3, 2x4, 2x5, 2x6, 3x5, 2x8 and "1 big + 4 / 6 / 8" in
+  portrait. A layout can therefore hold a different number of cameras in each orientation
+  ("1 big + 5" in landscape pairs with "1 big + 6" in portrait). The app remembers one layout per
+  orientation and switches when the tablet is rotated; cameras that stay in the same cell keep
+  playing, only the others connect.
 * **Very low CPU use**: hardware decoding only, one drawing surface for the whole wall, capped
   refresh rate per layout, video track only. See [How it works](#how-it-works).
-* **Sub stream in the grid, main stream when enlarged** (optional), so many tiles stay cheap.
+* **Sub stream in the grid, main stream when enlarged**: a tapped camera goes full screen at once
+  on its sub stream and switches to the high-resolution main stream as soon as that has a picture
+  (about half a second). If the main stream is unavailable or too large for the device's hardware
+  decoder, the sub stream stays. Can be turned off in Settings.
 * **Graceful beyond the hardware limit**: when a device runs out of hardware decoder instances
   (8 per codec on the Fire HD 8), extra tiles switch to key-frame stills that refresh every 1-2 s.
 * **Full screen**, no bars or buttons until asked for. Tap a camera to enlarge it, swipe to change
   page, swipe in from the top or bottom edge for the control bar.
 * **Scaling modes**: fit (keep proportions), stretch to fill the cell, zoom to fill (crop).
+  Stretch only applies while it distorts the picture by less than 40% (4:3 video in a 16:9 cell is
+  33%); beyond that, for example a camera shown full screen in portrait, it keeps the proportions.
 * **Live stream statistics** in single view: codec, resolution, decoder, decode and display frame
   rate, bit rate, dropped frames, reconnects, uptime.
 * **Camera management**: add, edit, delete, reorder, enable/disable; RTSP URLs with Basic or
@@ -91,7 +101,10 @@ Build the APK:
 ./gradlew :app:assembleRelease
 ```
 
-The result is `app/build/outputs/apk/release/app-release.apk`. For convenience the release build is
+The result is `app/build/outputs/apk/release/app-release.apk`. It is one universal APK: there are
+no per-device variants and no native code, so the same file installs on every supported device
+(Android 8.0 or newer, 32-bit or 64-bit, any screen size). Decoder limits and screen shape are
+detected at run time. For convenience the release build is
 signed with the local debug keystore so it can be installed right away; configure your own signing
 before distributing it. An APK built with a `cameras.yaml` contains those credentials: keep it private.
 
@@ -120,8 +133,8 @@ cameras:
 ```
 
 `input` is the low-resolution sub stream used in the grid. `main` is optional; when it is missing
-the app can derive it for common vendors (Dahua `subtype=1`, Hikvision `/Streaming/Channels/102`,
-Reolink `_sub`). Special characters in the user name or password must be percent-encoded.
+the app derives it for common vendors (Dahua `subtype=1`, Hikvision `/Streaming/Channels/102`,
+Reolink `_sub`, `/stream2`, `/12`). Special characters in the user name or password must be percent-encoded.
 
 Cameras can be added and edited in the app, or imported from a YAML file in this format
 (Settings, Import YAML). Export writes the same format. Credentials are stored in plain text in
@@ -130,12 +143,15 @@ the app's private storage and in exported files.
 ## Using the app
 
 * **Tap** a camera to enlarge it; tap again (or Back) to return to the grid. In single view a bar
-  shows the stream statistics, a shortcut to that camera's settings and the scaling mode.
+  shows the stream statistics (including whether the sub or the main stream is on screen), a
+  shortcut to that camera's settings and the scaling mode.
 * **Swipe** left / right to page through cameras when there are more than the layout shows.
 * **Swipe in from the top or bottom edge** (or long-press) to show the control bar: Settings,
-  layout, page, scaling mode. It hides itself after a few seconds.
-* **Settings**: layout, video scaling, camera names on/off, main stream in single view, camera
-  list, import / export.
+  layout, page, scaling mode. It hides itself after a few seconds. The layout button lists the
+  layouts of the orientation the tablet is in and changes only that orientation's choice.
+* **Settings**: layout in landscape, layout in portrait, video scaling, camera names on/off, main
+  stream in single view, camera list, import / export. An orientation whose layout was never
+  chosen follows the other one with a layout of similar size.
 
 A tile label shows the camera name and, when something is wrong, its state: `connecting`,
 `error: unreachable`, `error: wrong user or password`, `stills` (key-frame mode) and so on.
@@ -145,7 +161,11 @@ A tile label shows the camera name and, when something is wrong, its state: `con
 The viewer accepts a few intent extras, useful for testing or for setting up a wall-mounted tablet:
 
 ```bash
-adb shell am start -n com.rpanachi.onvifviewer/.MainActivity --es layout 16 --ei page 0 --es scale stretch
+adb shell am start -n com.rpanachi.onvifviewer/.MainActivity --es layout 4x4 --ei page 0 --es scale stretch
+```
+
+```bash
+adb shell am start -n com.rpanachi.onvifviewer/.MainActivity --es single "FRONT DOOR" --es orientation landscape
 ```
 
 ```bash
@@ -156,8 +176,11 @@ adb shell am start -n com.rpanachi.onvifviewer/.MainActivity --es import /sdcard
 adb shell am start -n com.rpanachi.onvifviewer/.MainActivity --ez reset true
 ```
 
-Layout ids: `1`, `4`, `6`, `8`, `9`, `9b` (1 big + 8), `12`, `16`. Scale: `fit`, `stretch`, `zoom`.
-`reset` restores the list bundled at build time. The logcat tag `OnvifViewer` prints per-camera
+Layout ids are `<columns>x<rows>` (`2x2`, `3x3`, `2x4`, ...) or `1+<n>` for the "1 big" layouts
+(`1+5`, `1+7`, `1+8` in landscape; `1+4`, `1+6`, `1+8` in portrait); `layout` sets the layout of the
+current orientation. Scale: `fit`, `stretch`, `zoom`. `single` opens one camera
+full screen by name. `orientation` (`landscape`, `portrait`, `auto`) holds the screen in one
+orientation until the app is closed. `reset` restores the list bundled at build time. The logcat tag `OnvifViewer` prints per-camera
 decoder, frame counters and compositor timing every 10 seconds:
 
 ```bash
@@ -168,8 +191,8 @@ adb logcat -s OnvifViewer
 
 * RTSP over TCP only; no UDP or multicast, no RTSPS.
 * No audio, recording, PTZ or ONVIF discovery.
-* Main streams larger than the device's hardware decoder limit (2048x1088 on the Fire HD 8) will
-  not decode; that is why "main stream in single view" is off by default.
+* Main streams larger than the device's hardware decoder limit (2048x1088 on the Fire HD 8) are
+  not shown; single view stays on the sub stream for those cameras.
 
 ## License
 

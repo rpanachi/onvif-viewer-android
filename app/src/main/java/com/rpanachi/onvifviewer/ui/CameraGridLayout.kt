@@ -9,7 +9,7 @@ import com.rpanachi.onvifviewer.model.LayoutPresets
 /** Positions its children in the cells of a [GridSpec]; child i goes to cell i. Used for the label overlay. */
 class CameraGridLayout(context: Context) : ViewGroup(context) {
 
-    var spec: GridSpec = LayoutPresets.spec("4", true)
+    var spec: GridSpec = LayoutPresets.spec("2x2", true)
         set(value) {
             field = value
             requestLayout()

@@ -30,10 +30,14 @@ import kotlin.concurrent.withLock
  */
 enum class ScaleMode(val id: String, val label: String) {
     FIT("fit", "Fit (keep proportions)"),
+    /** Fills the cell, unless that would distort the picture by more than [MAX_STRETCH]; then it fits. */
     STRETCH("stretch", "Stretch to fill"),
     ZOOM("zoom", "Zoom to fill (crop)");
 
     companion object {
+        /** 4:3 video in a 16:9 cell is 1.33; a landscape camera in a portrait cell is well beyond this. */
+        const val MAX_STRETCH = 1.4f
+
         fun byId(id: String?) = entries.firstOrNull { it.id == id } ?: STRETCH
     }
 }
@@ -46,12 +50,17 @@ class GlCompositorView(context: Context) : SurfaceView(context), SurfaceHolder.C
         @Volatile var surface: Surface? = null
         var lastTimestamp = -1L
         @Volatile var hasFrame = false
+        /** Frames count only once the current stream's decoder is attached, so a stale one is never shown. */
+        @Volatile var armed = false
         @Volatile var aspect = 0f
         val matrix = FloatArray(16)
     }
 
     private val slots = Array(MAX_SLOTS) { Slot(it) }
-    @Volatile private var spec: GridSpec? = null
+    /** The grid plus, optionally, which slot each cell shows (cell i shows slot i when null). */
+    private class Layout(val spec: GridSpec, val slotMap: IntArray?)
+
+    @Volatile private var layout: Layout? = null
     @Volatile var scaleMode = ScaleMode.STRETCH
     @Volatile var frameIntervalMs = 66L
     @Volatile var framesDrawn = 0L
@@ -85,8 +94,9 @@ class GlCompositorView(context: Context) : SurfaceView(context), SurfaceHolder.C
     /** The Surface a decoder should render tile [slot] into, or null until the GL thread is up. */
     fun surfaceFor(slot: Int): Surface? = slots.getOrNull(slot)?.surface
 
-    fun setGrid(spec: GridSpec) {
-        this.spec = spec
+    /** [slotMap] lets a cell show any slot, e.g. the single view showing the tile that was tapped. */
+    fun setGrid(spec: GridSpec, slotMap: IntArray? = null) {
+        layout = Layout(spec, slotMap)
         wake()
     }
 
@@ -99,9 +109,28 @@ class GlCompositorView(context: Context) : SurfaceView(context), SurfaceHolder.C
 
     /** Forget the last frames so a re-used tile does not show the previous camera. */
     fun clearTiles() {
-        for (s in slots) s.hasFrame = false
+        for (s in slots) {
+            s.armed = false
+            s.hasFrame = false
+        }
         wake()
     }
+
+    fun clearTile(slot: Int) {
+        slots.getOrNull(slot)?.let {
+            it.armed = false
+            it.hasFrame = false
+        }
+        wake()
+    }
+
+    /** Called when a new decoder starts rendering into [slot]: from now on its frames are shown. */
+    fun armSlot(slot: Int) {
+        slots.getOrNull(slot)?.armed = true
+    }
+
+    /** True once the compositor holds a frame of the stream currently rendering into [slot]. */
+    fun hasFrame(slot: Int): Boolean = slots.getOrNull(slot)?.hasFrame == true
 
     private fun wake() {
         lock.withLock {
@@ -175,9 +204,11 @@ class GlCompositorView(context: Context) : SurfaceView(context), SurfaceHolder.C
                     val ts = st.timestamp
                     if (ts != s.lastTimestamp) {
                         s.lastTimestamp = ts
-                        st.getTransformMatrix(s.matrix)
-                        s.hasFrame = true
-                        redraw = true
+                        if (s.armed) { // otherwise a late frame of the stream that used this slot before
+                            st.getTransformMatrix(s.matrix)
+                            s.hasFrame = true
+                            redraw = true
+                        }
                     }
                 }
                 val t1 = SystemClock.elapsedRealtimeNanos()
@@ -203,7 +234,8 @@ class GlCompositorView(context: Context) : SurfaceView(context), SurfaceHolder.C
             GLES20.glViewport(0, 0, width, height)
             GLES20.glClearColor(0f, 0f, 0f, 1f)
             GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
-            val g = spec ?: return
+            val lay = layout ?: return
+            val g = lay.spec
             GLES20.glUseProgram(program)
             GLES20.glActiveTexture(GLES20.GL_TEXTURE0)
             GLES20.glUniform1i(uTexture, 0)
@@ -211,7 +243,7 @@ class GlCompositorView(context: Context) : SurfaceView(context), SurfaceHolder.C
             GLES20.glEnableVertexAttribArray(aTex)
             val mode = scaleMode
             for (i in 0 until minOf(g.count, MAX_SLOTS)) {
-                val s = slots[i]
+                val s = slots.getOrNull(lay.slotMap?.getOrNull(i) ?: i) ?: continue
                 if (!s.hasFrame) continue
                 val r = GridGeometry.cellRect(g, i, width, height, gapPx)
                 var l = r.left.toFloat()
@@ -227,7 +259,8 @@ class GlCompositorView(context: Context) : SurfaceView(context), SurfaceHolder.C
                 val th = b - t
                 if (aspect > 0f && tw > 0f && th > 0f) {
                     val tileAspect = tw / th
-                    when (mode) {
+                    val distortion = if (aspect > tileAspect) aspect / tileAspect else tileAspect / aspect
+                    when (if (mode == ScaleMode.STRETCH && distortion > ScaleMode.MAX_STRETCH) ScaleMode.FIT else mode) {
                         ScaleMode.FIT -> if (aspect > tileAspect) { // black bars above and below
                             val nh = tw / aspect
                             t += (th - nh) / 2f
@@ -360,10 +393,10 @@ class GlCompositorView(context: Context) : SurfaceView(context), SurfaceHolder.C
         }
     }
 
-    private companion object {
-        const val TAG = "OnvifViewer"
+    companion object {
         const val MAX_SLOTS = 16
-        const val VERTEX_SHADER = """
+        private const val TAG = "OnvifViewer"
+        private const val VERTEX_SHADER = """
             attribute vec4 aPos;
             attribute vec4 aTex;
             uniform mat4 uTexMatrix;
@@ -373,7 +406,7 @@ class GlCompositorView(context: Context) : SurfaceView(context), SurfaceHolder.C
                 vTex = (uTexMatrix * aTex).xy;
             }
         """
-        const val FRAGMENT_SHADER = """
+        private const val FRAGMENT_SHADER = """
             #extension GL_OES_EGL_image_external : require
             precision mediump float;
             uniform samplerExternalOES sTexture;

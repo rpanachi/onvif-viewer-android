@@ -1,6 +1,7 @@
 package com.rpanachi.onvifviewer
 
 import android.content.Intent
+import android.content.pm.ActivityInfo
 import android.content.res.Configuration
 import android.graphics.Color
 import android.os.Build
@@ -58,6 +59,11 @@ class MainActivity : AppCompatActivity() {
     private val streams = mutableListOf<CameraStream>()
     private var enabledCameras: List<Camera> = emptyList()
     private var single: Camera? = null
+    /** Single view: the main (high resolution) stream warming up behind the sub stream that is on screen. */
+    private var upgrade: CameraStream? = null
+    private var mainNote = ""
+    private var requestedSingle: String? = null
+    private var started = false
     private val handler = Handler(Looper.getMainLooper())
     private var lastFramesDrawn = 0L
     private val density: Float get() = resources.displayMetrics.density
@@ -108,16 +114,18 @@ class MainActivity : AppCompatActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        if (applyIntentExtras(intent)) {
+        if (applyIntentExtras(intent) && started) {
             enabledCameras = store.cameras().filter { it.enabled }
-            single = null
+            single = takeRequestedSingle()
             rebuild()
         }
     }
 
     /**
      * Test / provisioning hooks:
-     * `adb shell am start -n <pkg>/.MainActivity --es layout 4 --ei page 0 --es scale zoom --es import <file> --ez reset true`
+     * `adb shell am start -n <pkg>/.MainActivity --es layout 2x2 --ei page 0 --es scale zoom --es single <camera name>
+     * --es import <file> --ez reset true --es orientation landscape`. `layout` sets the layout of the
+     * current orientation; `orientation` (landscape, portrait or auto) holds until the app is closed.
      */
     private fun applyIntentExtras(intent: Intent?): Boolean {
         var changed = false
@@ -136,10 +144,21 @@ class MainActivity : AppCompatActivity() {
                 .onFailure { Log.w(TAG, "import of $path failed: ${it.message}") }
         }
         intent?.getStringExtra("layout")?.let {
-            if (LayoutPresets.all.any { p -> p.id == it }) {
-                store.layoutId = it
+            LayoutPresets.resolve(it, isLandscape)?.let { id ->
+                store.setLayoutId(isLandscape, id)
                 changed = true
             }
+        }
+        intent?.getStringExtra("orientation")?.let {
+            requestedOrientation = when (it) {
+                "landscape" -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+                "portrait" -> ActivityInfo.SCREEN_ORIENTATION_SENSOR_PORTRAIT
+                else -> ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
+            }
+        }
+        intent?.getStringExtra("single")?.let {
+            requestedSingle = it
+            changed = true
         }
         intent?.getStringExtra("scale")?.let {
             store.scaleMode = ScaleMode.byId(it).id
@@ -155,10 +174,17 @@ class MainActivity : AppCompatActivity() {
         return changed
     }
 
+    private fun takeRequestedSingle(): Camera? {
+        val wanted = requestedSingle ?: return null
+        requestedSingle = null
+        return enabledCameras.firstOrNull { it.name.equals(wanted, true) || it.id.equals(wanted, true) }
+    }
+
     override fun onStart() {
         super.onStart()
+        started = true
         enabledCameras = store.cameras().filter { it.enabled }
-        single = null
+        single = takeRequestedSingle()
         rebuild()
         handler.postDelayed(statsLogger, STATS_INTERVAL_MS)
         handler.postDelayed(statsUpdater, 1000)
@@ -171,6 +197,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStop() {
         super.onStop()
+        started = false
         handler.removeCallbacksAndMessages(null)
         releaseAll()
     }
@@ -182,9 +209,13 @@ class MainActivity : AppCompatActivity() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        val spec = currentSpec()
-        labelGrid.spec = spec
-        compositor.setGrid(spec)
+        // Each orientation has its own layout. The streams keep running when it shows the same cameras.
+        if (streams.isNotEmpty() && streams.map { it.camera.id } == visibleCameras().map { it.id }) {
+            applyGrid()
+            refreshControls()
+        } else {
+            rebuild()
+        }
     }
 
     // ---- grid state ----
@@ -193,9 +224,20 @@ class MainActivity : AppCompatActivity() {
         get() = resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE
 
     private fun currentSpec(): GridSpec =
-        LayoutPresets.spec(if (single != null) "1" else store.layoutId, isLandscape)
+        LayoutPresets.spec(if (single != null) "1x1" else store.layoutId(isLandscape), isLandscape)
 
-    private fun perPage() = LayoutPresets.byId(store.layoutId).count
+    private fun currentPreset() = LayoutPresets.byId(store.layoutId(isLandscape), isLandscape)
+
+    private fun perPage() = currentPreset().count
+
+    /** In single view the one cell shows whichever slot the stream on screen renders into. */
+    private fun applyGrid() {
+        val spec = currentSpec()
+        labelGrid.spec = spec
+        compositor.setGrid(spec, if (single != null) streams.firstOrNull()?.let { intArrayOf(it.slot) } else null)
+    }
+
+    private fun newTile() = CameraTileView(this).apply { showLabel = store.showLabels }
 
     private fun pageCount() = if (enabledCameras.isEmpty()) 1 else (enabledCameras.size + perPage() - 1) / perPage()
 
@@ -207,16 +249,22 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun rebuild() {
-        releaseAll()
-        labelGrid.removeAllViews()
-        compositor.clearTiles()
-        val spec = currentSpec()
-        labelGrid.spec = spec
-        compositor.setGrid(spec)
-        compositor.scaleMode = ScaleMode.byId(store.scaleMode)
         val cams = visibleCameras()
+        // A stream that already plays the right camera in the right cell carries on, so a rotation or a
+        // layout change that keeps some cameras in place does not reconnect them. The rest is replaced.
+        val kept = if (single != null) emptyMap() else streams
+            .filter { st -> !st.keyframesOnly && cams.getOrNull(st.slot)?.let { it.id == st.camera.id && it.input == st.url } == true }
+            .associateBy { it.slot }
+        streams.forEach { if (kept[it.slot] !== it) it.stop() }
+        streams.clear()
+        upgrade?.stop()
+        upgrade = null
+        mainNote = ""
+        labelGrid.removeAllViews()
+        for (slot in 0 until GlCompositorView.MAX_SLOTS) if (slot !in kept) compositor.clearTile(slot)
+        compositor.scaleMode = ScaleMode.byId(store.scaleMode)
         if (cams.isEmpty()) {
-            labelGrid.spec = LayoutPresets.spec("1", isLandscape)
+            labelGrid.spec = LayoutPresets.spec("1x1", isLandscape)
             compositor.setGrid(labelGrid.spec)
             labelGrid.addView(TextView(this).apply {
                 text = "No cameras enabled.\nSwipe down from the top edge and open Settings."
@@ -227,24 +275,105 @@ class MainActivity : AppCompatActivity() {
         } else {
             val interval = Engine.renderIntervalMs(cams.size)
             compositor.frameIntervalMs = interval
-            val useMain = single != null && store.mainInSingle
+            val tileInterval = if (cams.size == 1) 0L else interval
             cams.forEachIndexed { i, cam ->
-                val tile = CameraTileView(this).apply { showLabel = store.showLabels }
-                labelGrid.addView(tile)
-                val url = if (useMain) (StreamUrls.mainFor(cam) ?: cam.input) else cam.input
-                val stream = CameraStream(cam, url, i, compositor, tile, if (cams.size == 1) 0L else interval)
+                val stream = kept[i]?.also { it.renderIntervalMs = tileInterval }
+                    ?: CameraStream(cam, cam.input, i, compositor, newTile(), tileInterval).also { it.start() }
+                labelGrid.addView(stream.tile)
                 streams += stream
-                stream.start()
             }
-            Log.i(TAG, "showing ${cams.size} camera(s), layout=${store.layoutId}, page=${store.page + 1}/${pageCount()}, single=${single?.name}, scale=${store.scaleMode}, render every ${interval}ms")
+            applyGrid()
+            Log.i(TAG, "showing ${cams.size} camera(s), ${kept.size} kept running, layout=${store.layoutId(isLandscape)} " +
+                "(${if (isLandscape) "landscape" else "portrait"}), page=${store.page + 1}/${pageCount()}, single=${single?.name}, " +
+                "scale=${store.scaleMode}, render every ${interval}ms")
+            if (single != null) startUpgrade(streams[0])
         }
         refreshControls()
         if (single != null) showControls() else if (controls.visibility == View.VISIBLE) scheduleHide()
     }
 
     private fun releaseAll() {
+        upgrade?.stop()
+        upgrade = null
+        mainNote = ""
         streams.forEach { it.stop() }
         streams.clear()
+    }
+
+    // ---- single view ----
+
+    /** Enlarges a grid tile without interrupting it: its stream keeps playing while the others stop. */
+    private fun enterSingle(index: Int) {
+        val keep = streams[index]
+        single = keep.camera
+        if (keep.keyframesOnly) { // the tile was on the software fallback: restart it on a hardware decoder
+            rebuild()
+            return
+        }
+        streams.forEach { if (it !== keep) it.stop() }
+        streams.clear()
+        streams += keep
+        labelGrid.removeAllViews()
+        labelGrid.addView(keep.tile)
+        applyGrid()
+        compositor.frameIntervalMs = Engine.renderIntervalMs(1)
+        keep.renderIntervalMs = 0
+        Log.i(TAG, "showing ${keep.camera.name} full screen")
+        startUpgrade(keep)
+        refreshControls()
+        showControls()
+    }
+
+    /**
+     * Connects the main stream into a spare slot while [sub] stays on screen, and swaps them once the
+     * main stream has a picture. If it never gets one, the sub stream simply stays.
+     */
+    private fun startUpgrade(sub: CameraStream) {
+        mainNote = ""
+        if (!store.mainInSingle) return
+        val url = StreamUrls.mainFor(sub.camera)
+        if (url == null) {
+            mainNote = "No main stream URL known for this camera; set one in Camera settings"
+            return
+        }
+        if (url == sub.url) return
+        val slot = if (sub.slot == GlCompositorView.MAX_SLOTS - 1) sub.slot - 1 else GlCompositorView.MAX_SLOTS - 1
+        compositor.clearTile(slot)
+        val main = CameraStream(sub.camera, url, slot, compositor, newTile(), 0L)
+        upgrade = main
+        mainNote = "Switching to the main stream…"
+        main.onLive = { promote(sub, main) }
+        main.start()
+        handler.postDelayed({ abandonUpgrade(main, "no picture after ${MAIN_STREAM_TIMEOUT_MS / 1000} s, last state: ${main.state}") }, MAIN_STREAM_TIMEOUT_MS)
+    }
+
+    private fun promote(sub: CameraStream, main: CameraStream) {
+        if (upgrade !== main) return
+        if (main.keyframesOnly) {
+            abandonUpgrade(main, "${main.videoInfo} is beyond this device's hardware decoder")
+            return
+        }
+        if (!compositor.hasFrame(main.slot)) { // decoded, but not yet picked up by the compositor
+            handler.postDelayed({ promote(sub, main) }, 40)
+            return
+        }
+        upgrade = null
+        mainNote = ""
+        sub.stop()
+        streams.clear()
+        streams += main
+        labelGrid.removeAllViews()
+        labelGrid.addView(main.tile)
+        applyGrid()
+        Log.i(TAG, "${main.camera.name}: switched to main stream ${main.videoInfo} on ${main.decoderName}")
+    }
+
+    private fun abandonUpgrade(main: CameraStream, reason: String) {
+        if (upgrade !== main) return
+        upgrade = null
+        main.stop()
+        mainNote = "Main stream not used ($reason); showing the sub stream"
+        Log.w(TAG, "${main.camera.name}: $mainNote")
     }
 
     private fun changePage(delta: Int) {
@@ -299,7 +428,7 @@ class MainActivity : AppCompatActivity() {
         val scaleLabel = "Scale: " + ScaleMode.byId(store.scaleMode).label.substringBefore(" (")
         if (s == null) {
             controlRow.addView(barButton("Settings") { startActivity(Intent(this, SettingsActivity::class.java)) })
-            controlRow.addView(barButton("Layout: " + LayoutPresets.byId(store.layoutId).label) { anchor -> pickLayout(anchor) })
+            controlRow.addView(barButton("Layout: " + currentPreset().label) { anchor -> pickLayout(anchor) })
             controlRow.addView(barButton("◀") { changePage(-1) })
             controlRow.addView(TextView(this).apply {
                 text = "Page ${store.page + 1}/${pageCount()}"
@@ -321,17 +450,20 @@ class MainActivity : AppCompatActivity() {
             controlRow.addView(barButton(scaleLabel) { anchor -> pickScale(anchor) })
             statsText.visibility = View.VISIBLE
             statsStream = null
-            statsText.text = "${s.name}: connecting"
+            statsText.text = "${s.name}: ${streams.firstOrNull()?.state ?: "connecting"}"
         }
     }
 
     private fun pickLayout(anchor: View) {
+        // The list and the choice belong to the orientation the tablet is in right now.
+        val landscape = isLandscape
+        val presets = LayoutPresets.forOrientation(landscape)
         PopupMenu(this, anchor).apply {
-            LayoutPresets.all.forEachIndexed { i, p -> menu.add(0, i, i, p.label) }
+            presets.forEachIndexed { i, p -> menu.add(0, i, i, p.label) }
             setOnMenuItemClickListener { item ->
-                val preset = LayoutPresets.all[item.itemId]
-                if (preset.id != store.layoutId) {
-                    store.layoutId = preset.id
+                val preset = presets[item.itemId]
+                if (preset.id != store.layoutId(landscape)) {
+                    store.setLayoutId(landscape, preset.id)
                     store.page = 0
                     rebuild()
                 }
@@ -410,9 +542,11 @@ class MainActivity : AppCompatActivity() {
         statsBytes = st.bytesReceived
         val decoder = st.decoderName?.let { if (st.keyframesOnly) "$it (key frames only)" else it } ?: "no decoder yet"
         val liveFor = if (st.liveSince > 0) formatDuration(now - st.liveSince) else "-"
-        return "${st.camera.name} · ${st.videoInfo.ifEmpty { "stream not described yet" }} · $decoder\n" +
+        val kind = if (st.url == st.camera.input) "sub stream" else "main stream"
+        return "${st.camera.name} · $kind · ${st.videoInfo.ifEmpty { "stream not described yet" }} · $decoder\n" +
             "%s · decode %.1f fps · shown %.1f fps · %.2f Mbit/s · dropped %d · reconnects %d · live for %s"
-                .format(st.state, decodeFps, shownFps, mbps, st.framesDropped, st.reconnects, liveFor)
+                .format(st.state, decodeFps, shownFps, mbps, st.framesDropped, st.reconnects, liveFor) +
+            (if (mainNote.isNotEmpty()) "\n$mainNote" else "")
     }
 
     private fun formatDuration(ms: Long): String {
@@ -436,10 +570,7 @@ class MainActivity : AppCompatActivity() {
                 return true
             }
             val idx = labelGrid.childIndexAt(e.x, e.y)
-            if (idx in streams.indices) {
-                single = streams[idx].camera
-                rebuild()
-            }
+            if (idx in streams.indices) enterSingle(idx)
             return true
         }
 
@@ -502,5 +633,7 @@ class MainActivity : AppCompatActivity() {
         private const val SWIPE_MIN_PX = 120f
         private const val SWIPE_MIN_VELOCITY = 300f
         private const val EDGE_DP = 32f
+        /** How long the main stream gets to show a picture before the single view settles for the sub stream. */
+        private const val MAIN_STREAM_TIMEOUT_MS = 10_000L
     }
 }

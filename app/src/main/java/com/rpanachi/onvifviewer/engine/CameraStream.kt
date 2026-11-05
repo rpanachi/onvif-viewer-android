@@ -16,12 +16,22 @@ import com.rpanachi.onvifviewer.ui.GlCompositorView
  */
 class CameraStream(
     val camera: Camera,
-    private val url: String,
+    val url: String,
     val slot: Int,
     private val compositor: GlCompositorView,
-    private val tile: CameraTileView,
-    private val renderIntervalMs: Long,
+    val tile: CameraTileView,
+    renderIntervalMs: Long,
 ) : RtspClient.Listener, VideoDecoder.Listener {
+
+    /** Minimum stream time between displayed frames; 0 shows every frame. Can change while running. */
+    @Volatile var renderIntervalMs: Long = renderIntervalMs
+        set(value) {
+            field = value
+            decoder?.renderIntervalUs = value * 1000
+        }
+
+    /** Called on the main thread each time a connection shows its first frame. */
+    var onLive: (() -> Unit)? = null
 
     private val main = Handler(Looper.getMainLooper())
     @Volatile private var stopped = false
@@ -173,6 +183,7 @@ class CameraStream(
             return
         }
         decoder = d
+        compositor.armSlot(slot)
         compositor.setTileAspect(slot, dims.width * dims.pixelAspect / dims.height)
         Log.i(TAG, "${camera.name}: ${c.name} ${dims.width}x${dims.height} par=${dims.pixelAspect} decoder=${d.codecName}" +
             if (d.keyframesOnly) " (key frames only)" else "")
@@ -198,6 +209,7 @@ class CameraStream(
                 retryDelayMs = INITIAL_RETRY_MS
                 liveSince = SystemClock.elapsedRealtime()
                 setState(if (decoder.keyframesOnly) "stills" else "live")
+                onLive?.invoke()
             }
         }
     }

@@ -11,11 +11,13 @@ object StreamUrls {
         val dahua = Regex("subtype=1\\b")
         val hik = Regex("/Streaming/Channels/(\\d)02\\b")
         val tplink = Regex("/stream2\\b")
+        val numbered = Regex("/12$")
         return when {
             dahua.containsMatchIn(sub) -> sub.replace(dahua, "subtype=0")
             sub.contains("_sub", ignoreCase = true) -> sub.replace("_sub", "_main", ignoreCase = true)
             hik.containsMatchIn(sub) -> sub.replace(hik, "/Streaming/Channels/\$101")
             tplink.containsMatchIn(sub) -> sub.replace(tplink, "/stream1")
+            numbered.containsMatchIn(sub) -> sub.replace(numbered, "/11")
             else -> null
         }
     }
