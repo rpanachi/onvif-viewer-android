@@ -45,7 +45,7 @@ object LayoutPresets {
     )
 
     private val portraitOf = mapOf(
-        "2x1" to "1x2", "2x2" to "2x3", "3x2" to "2x3", "3x3" to "2x5", "4x3" to "2x6", "4x4" to "2x8",
+        "2x1" to "1x2", "2x2" to "2x4", "3x2" to "2x3", "3x3" to "2x5", "4x3" to "2x6", "4x4" to "2x8",
         "1+5" to "1+6", "1+7" to "1+8",
     )
 

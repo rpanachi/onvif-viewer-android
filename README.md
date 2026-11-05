@@ -27,8 +27,9 @@ The app plays RTSP streams. It does not do ONVIF discovery, PTZ or recording, an
 * **Full screen**, no bars or buttons until asked for. Tap a camera to enlarge it, swipe to change
   page, swipe in from the top or bottom edge for the control bar.
 * **Scaling modes**: fit (keep proportions), stretch to fill the cell, zoom to fill (crop).
-  Stretch only applies while it distorts the picture by less than 40% (4:3 video in a 16:9 cell is
-  33%); beyond that, for example a camera shown full screen in portrait, it keeps the proportions.
+  Stretch always fills a grid cell, whatever the camera's shape. A camera shown full screen is
+  stretched only while that distorts it by less than 40% (4:3 video on a 16:9 screen is 33%);
+  beyond that, for example full screen in portrait, it keeps its proportions with black bars.
 * **Live stream statistics** in single view: codec, resolution, decoder, decode and display frame
   rate, bit rate, dropped frames, reconnects, uptime.
 * **Camera management**: add, edit, delete, reorder, enable/disable; RTSP URLs with Basic or

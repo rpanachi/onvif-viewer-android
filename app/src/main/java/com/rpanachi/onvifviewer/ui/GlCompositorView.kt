@@ -30,13 +30,16 @@ import kotlin.concurrent.withLock
  */
 enum class ScaleMode(val id: String, val label: String) {
     FIT("fit", "Fit (keep proportions)"),
-    /** Fills the cell, unless that would distort the picture by more than [MAX_STRETCH]; then it fits. */
+    /** Fills the cell. Only a camera shown full screen falls back to fitting, see [FULL_SCREEN_MAX_STRETCH]. */
     STRETCH("stretch", "Stretch to fill"),
     ZOOM("zoom", "Zoom to fill (crop)");
 
     companion object {
-        /** 4:3 video in a 16:9 cell is 1.33; a landscape camera in a portrait cell is well beyond this. */
-        const val MAX_STRETCH = 1.4f
+        /**
+         * A camera shown full screen is stretched only up to this distortion (4:3 video on a 16:9 screen
+         * is 1.33). Beyond it, typically a landscape camera on a portrait screen, it keeps its proportions.
+         */
+        const val FULL_SCREEN_MAX_STRETCH = 1.4f
 
         fun byId(id: String?) = entries.firstOrNull { it.id == id } ?: STRETCH
     }
@@ -62,6 +65,8 @@ class GlCompositorView(context: Context) : SurfaceView(context), SurfaceHolder.C
 
     @Volatile private var layout: Layout? = null
     @Volatile var scaleMode = ScaleMode.STRETCH
+    /** In stretch mode, a picture that would be distorted by more than this factor is fitted instead. */
+    @Volatile var maxStretch = Float.MAX_VALUE
     @Volatile var frameIntervalMs = 66L
     @Volatile var framesDrawn = 0L
         private set
@@ -260,7 +265,7 @@ class GlCompositorView(context: Context) : SurfaceView(context), SurfaceHolder.C
                 if (aspect > 0f && tw > 0f && th > 0f) {
                     val tileAspect = tw / th
                     val distortion = if (aspect > tileAspect) aspect / tileAspect else tileAspect / aspect
-                    when (if (mode == ScaleMode.STRETCH && distortion > ScaleMode.MAX_STRETCH) ScaleMode.FIT else mode) {
+                    when (if (mode == ScaleMode.STRETCH && distortion > maxStretch) ScaleMode.FIT else mode) {
                         ScaleMode.FIT -> if (aspect > tileAspect) { // black bars above and below
                             val nh = tw / aspect
                             t += (th - nh) / 2f

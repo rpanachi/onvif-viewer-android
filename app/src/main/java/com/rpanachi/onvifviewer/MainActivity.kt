@@ -234,6 +234,9 @@ class MainActivity : AppCompatActivity() {
     private fun applyGrid() {
         val spec = currentSpec()
         labelGrid.spec = spec
+        // Grid cells are always filled; one camera covering the screen keeps its proportions when the
+        // screen has a very different shape (a landscape picture on a portrait screen).
+        compositor.maxStretch = if (spec.count == 1) ScaleMode.FULL_SCREEN_MAX_STRETCH else Float.MAX_VALUE
         compositor.setGrid(spec, if (single != null) streams.firstOrNull()?.let { intArrayOf(it.slot) } else null)
     }
 
