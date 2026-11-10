@@ -18,3 +18,8 @@ cameras.yaml
 cameras.xml
 *.keystore
 *.jks
+
+# Local secrets (NVR and camera credentials)
+.env
+.env.*
+!.env.example
